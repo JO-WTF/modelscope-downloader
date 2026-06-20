@@ -23,10 +23,24 @@ from rich.progress import (
 from rich.text import Text
 from rich.table import Table
 
+from datetime import datetime
 from .client import RepoFile, filter_files
 from . import __version__
-from .client import DEFAULT_ENDPOINT, ModelScopeClient, ModelScopeError
+from .client import DEFAULT_ENDPOINT, ModelScopeClient, ModelScopeError, SearchResultModel
 from .planner import FilePlan, build_download_plan, check_disk_space
+
+
+LOGO = r"""
+ _   .-')                _ .-') _     ('-.             .-')                              _ (`-.    ('-.
+( '.( OO )_             ( (  OO) )  _(  OO)           ( OO ).                           ( (OO  ) _(  OO)
+ ,--.   ,--.).-'),-----. \     .'_ (,------.,--.     (_)---\_)   .-----.  .-'),-----.  _.`     \(,------.
+ |   `.'   |( OO'  .-.  ',`'--..._) |  .---'|  |.-') /    _ |   '  .--./ ( OO'  .-.  '(__...--'' |  .---'
+ |         |/   |  | |  ||  |  \  ' |  |    |  | OO )\  :` `.   |  |('-. /   |  | |  | |  /  | | |  |
+ |  |'.'|  |\_) |  |\|  ||  |   ' |(|  '--. |  |`-' | '..`''.) /_) |OO  )\_) |  |\|  | |  |_.' |(|  '--.
+ |  |   |  |  \ |  | |  ||  |   / : |  .--'(|  '---.'.-._)   \ ||  |`-'|   \ |  | |  | |  .___.' |  .--'
+ |  |   |  |   `'  '-'  '|  '--'  / |  `---.|      | \       /(_'  '--'\    `'  '-'  ' |  |      |  `---.
+ `--'   `--'     `-----' `-------'  `------'`------'  `-----'    `-----'      `-----'  `--'      `------'
+"""
 
 console = Console()
 _resize_lock = Lock()
@@ -114,6 +128,40 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_options(download)
     add_filter_options(download)
 
+    ls_parser = subparsers.add_parser(
+        "ls",
+        help="List files in a ModelScope repository.",
+    )
+    ls_parser.add_argument("model_id", help="ModelScope model id")
+    add_common_options(ls_parser)
+    add_filter_options(ls_parser)
+
+    info_parser = subparsers.add_parser(
+        "info",
+        help="Show metadata for a ModelScope repository.",
+    )
+    info_parser.add_argument("model_id", help="ModelScope model id")
+    add_common_options(info_parser)
+
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Search models on ModelScope by keyword.",
+    )
+    search_parser.add_argument("keyword", help="Keyword to search for")
+    search_parser.add_argument(
+        "--page-size",
+        type=int,
+        default=20,
+        help="Number of results to display. Defaults to 20.",
+    )
+    search_parser.add_argument(
+        "--page-number",
+        type=int,
+        default=1,
+        help="Page number to display. Defaults to 1.",
+    )
+    add_common_options(search_parser)
+
     legacy = argparse.ArgumentParser(add_help=False)
     legacy.add_argument("model_id", help=argparse.SUPPRESS)
     legacy.add_argument("-o", "--output", default=".", help=argparse.SUPPRESS)
@@ -129,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     argv = sys.argv[1:] if argv is None else argv
     parser = build_parser()
-    if argv and argv[0] != "download" and not argv[0].startswith("-"):
+    if argv and argv[0] not in ("download", "ls", "info", "search") and not argv[0].startswith("-"):
         args = parser.get_default("_legacy_parser").parse_args(argv)
         args.command = "legacy"
         return args
@@ -557,8 +605,101 @@ def format_duration(seconds: int) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def command_ls(client: ModelScopeClient, args: argparse.Namespace) -> int:
+    files = filter_files(client.list_files(args.model_id, args.revision), args.include, args.exclude)
+    if not files:
+        console.print("[yellow]No files found.[/yellow]")
+        return 0
+
+    table = Table(title=f"Files in {args.model_id} ({args.revision})", box=None)
+    table.add_column("Path", style="cyan")
+    table.add_column("Size", justify="right", style="green")
+
+    total_size = 0
+    for f in files:
+        size_str = format_bytes(f.size) if f.size is not None else "unknown"
+        table.add_row(f.path, size_str)
+        if f.size:
+            total_size += f.size
+
+    console.print(table)
+    console.print(f"\nTotal: {len(files)} files, {format_bytes(total_size)}")
+def command_info(client: ModelScopeClient, args: argparse.Namespace) -> int:
+    try:
+        info = client.get_model_info(args.model_id)
+    except ModelScopeError as exc:
+        console.print(f"[red]Error fetching metadata:[/red] {exc}")
+        return 1
+
+    table = Table(title=f"Model Info: {info.name}", show_header=False, box=None)
+    table.add_column("Field", style="cyan", no_wrap=True)
+    table.add_column("Value")
+
+    table.add_row("Description", info.description[:200] + ("..." if len(info.description) > 200 else ""))
+    table.add_row("Tasks", ", ".join(info.tasks) if info.tasks else "None")
+    table.add_row("Stars", str(info.stars))
+    table.add_row("Storage Size", format_bytes(info.storage_size))
+    table.add_row("Created At", info.created_at)
+    table.add_row("Modified At", info.modified_at)
+
+    console.print(table)
+    return 0
+
+
+def command_search(client: ModelScopeClient, args: argparse.Namespace) -> int:
+    try:
+        results = client.search_models(
+            keyword=args.keyword,
+            page_size=args.page_size,
+            page_number=args.page_number,
+        )
+    except ModelScopeError as exc:
+        console.print(f"[red]Error searching models:[/red] {exc}")
+        return 1
+
+    if not results:
+        console.print(f"[yellow]No models found matching '{args.keyword}'.[/yellow]")
+        return 0
+
+    table = Table(title=f"Search Results for '{args.keyword}' (Page {args.page_number})", box=None)
+    table.add_column("Model ID", style="cyan")
+    table.add_column("Task", style="magenta")
+    table.add_column("Stars", justify="right", style="yellow")
+    table.add_column("Downloads", justify="right", style="green")
+    table.add_column("Size", justify="right", style="blue")
+    table.add_column("Last Updated", style="dim")
+
+    for m in results:
+        size_str = format_bytes(m.storage_size) if m.storage_size is not None else "unknown"
+        updated_str = (
+            datetime.fromtimestamp(m.last_modified).strftime("%Y-%m-%d")
+            if m.last_modified
+            else "unknown"
+        )
+        task_str = m.task if m.task else "-"
+        table.add_row(
+            m.model_id,
+            task_str,
+            str(m.stars),
+            str(m.downloads),
+            size_str,
+            updated_str,
+        )
+
+    console.print(table)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    
+    # 不影响需要纯文本处理的命令输出，仅在输出是终端时打印 Logo。
+    # 官方客户端是直接 print 的，导致窄屏幕下会换行乱码。
+    # 我们这里做个优化：只有当终端宽度足够（>= 105）时才打印，保持优雅。
+    if sys.stdout.isatty() and not args.simple_progress:
+        if console.width >= 105:
+            console.print(LOGO, style="bold blue", highlight=False, soft_wrap=True)
+
     client = ModelScopeClient(
         endpoint=args.endpoint,
         token=args.token,
@@ -573,6 +714,15 @@ def main(argv: list[str] | None = None) -> int:
                 return download_one(client, args, args.filename, local_dir / args.filename, local_dir)
             return download_repo(client, args, local_dir)
 
+        if args.command == "ls":
+            return command_ls(client, args)
+
+        if args.command == "info":
+            return command_info(client, args)
+
+        if args.command == "search":
+            return command_search(client, args)
+
         if args.command == "legacy" and args.file:
             output = Path(args.output)
             if output.exists() and output.is_dir():
@@ -582,7 +732,8 @@ def main(argv: list[str] | None = None) -> int:
                 output = output / Path(args.file).name
             return download_one(client, args, args.file, output, output.parent)
 
-        return download_repo(client, args, Path(args.output))
+        if args.command == "legacy":
+            return download_repo(client, args, Path(args.output))
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130

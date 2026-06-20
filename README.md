@@ -5,9 +5,8 @@
 ## 安装
 
 ```bash
-cd /Users/zhaoyu/Projects/modelscope-downloader
-python3 -m venv .venv
-.venv/bin/pip install -e .
+cd modelscope-downloader
+pip install -e .
 ```
 
 运行依赖：
@@ -61,6 +60,26 @@ ms download Qwen/Qwen2.5-0.5B --local-dir ./downloads/qwen --include "*.safetens
 
 ```bash
 ms download Qwen/Qwen2.5-0.5B --local-dir ./downloads/qwen --exclude "*.bin" --no-verify-ssl
+```
+
+## 查询仓库
+
+在下载之前，你可以先用 `ls` 命令查看仓库有哪些文件以及对应的大小：
+
+```bash
+ms ls Qwen/Qwen2.5-0.5B --no-verify-ssl
+```
+
+或者使用 `info` 查看仓库的摘要信息（如任务类型、预估总大小、简介）：
+
+```bash
+ms info Qwen/Qwen2.5-0.5B --no-verify-ssl
+```
+
+或者使用 `search` 模糊搜索模型列表：
+
+```bash
+ms search qwen2 --page-size 10 --no-verify-ssl
 ```
 
 ## 私有模型

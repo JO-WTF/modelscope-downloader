@@ -86,3 +86,24 @@ def test_completed_active_file_keeps_row_but_marks_done():
     assert len(progress.tasks) == 2
     assert progress.tasks[1].visible is True
     assert progress.tasks[1].fields["done"] is True
+
+
+def test_parse_ls_command():
+    args = parse_args(["ls", "Qwen/Qwen2.5-0.5B"])
+    assert args.command == "ls"
+    assert args.model_id == "Qwen/Qwen2.5-0.5B"
+
+
+def test_parse_info_command():
+    args = parse_args(["info", "Qwen/Qwen2.5-0.5B"])
+    assert args.command == "info"
+    assert args.model_id == "Qwen/Qwen2.5-0.5B"
+
+
+def test_parse_search_command():
+    args = parse_args(["search", "qwen2", "--page-size", "10", "--page-number", "2"])
+    assert args.command == "search"
+    assert args.keyword == "qwen2"
+    assert args.page_size == 10
+    assert args.page_number == 2
+

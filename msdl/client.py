@@ -25,6 +25,26 @@ class RepoFile:
     path: str
     size: int | None = None
 
+@dataclass(frozen=True)
+class ModelInfo:
+    name: str
+    description: str
+    stars: int
+    storage_size: int
+    tasks: list[str]
+    created_at: str
+    modified_at: str
+
+
+@dataclass(frozen=True)
+class SearchResultModel:
+    model_id: str
+    task: str | None
+    stars: int
+    downloads: int
+    storage_size: int | None
+    last_modified: int | None
+
 
 class ModelScopeClient:
     def __init__(
@@ -84,6 +104,92 @@ class ModelScopeClient:
             "Use --file for a single file download, or update the API candidate list.\n"
             f"{detail}"
         )
+
+    def get_model_info(self, model_id: str) -> ModelInfo:
+        model = quote(model_id.strip("/"), safe="/")
+        url = f"{self.endpoint}/api/v1/models/{model}"
+        try:
+            resp = self.session.get(
+                url,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                headers={"Accept": "application/json"},
+            )
+        except requests.RequestException as exc:
+            raise ModelScopeError(f"Failed to fetch model info for {model_id}: {exc}")
+        if not resp.ok:
+            raise ModelScopeError(f"Failed to fetch model info for {model_id}: HTTP {resp.status_code} {resp.text[:200]}")
+        try:
+            data = resp.json()
+            if not data.get("Success"):
+                raise ModelScopeError(f"API returned failure for {model_id}: {data.get('Message')}")
+            info = data.get("Data", {})
+            tasks = [task.get("Name", "") for task in info.get("Tasks", []) if task.get("Name")]
+            return ModelInfo(
+                name=info.get("Name", model_id),
+                description=info.get("Description", ""),
+                stars=info.get("Stars", 0),
+                storage_size=info.get("StorageSize", 0),
+                tasks=tasks,
+                created_at=info.get("GmtCreated", ""),
+                modified_at=info.get("GmtModified", ""),
+            )
+        except (ValueError, TypeError) as exc:
+            raise ModelScopeError(f"Failed to parse model info for {model_id}: {exc}")
+
+    def search_models(
+        self,
+        keyword: str,
+        page_size: int = 20,
+        page_number: int = 1,
+    ) -> list[SearchResultModel]:
+        url = f"{self.endpoint}/api/v1/models/"
+        payload = {
+            "Name": keyword,
+            "PageSize": page_size,
+            "PageNumber": page_number,
+        }
+        try:
+            resp = self.session.put(
+                url,
+                json=payload,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                headers={"Accept": "application/json"},
+            )
+        except requests.RequestException as exc:
+            raise ModelScopeError(f"Failed to search models: {exc}")
+        if not resp.ok:
+            raise ModelScopeError(f"Failed to search models: HTTP {resp.status_code} {resp.text[:200]}")
+        try:
+            data = resp.json()
+            if not data.get("Success"):
+                raise ModelScopeError(f"API returned failure for search: {data.get('Message')}")
+            
+            models_data = data.get("Data", {}) or {}
+            models = models_data.get("Models") or []
+            results = []
+            for m in models:
+                path = m.get("Path")
+                name = m.get("Name")
+                model_id = f"{path}/{name}" if path and name else (name or "")
+                
+                tasks = m.get("Tasks", [])
+                task = tasks[0].get("Name") if tasks and isinstance(tasks, list) else None
+                
+                results.append(
+                    SearchResultModel(
+                        model_id=model_id,
+                        task=task,
+                        stars=m.get("Stars", 0),
+                        downloads=m.get("Downloads", 0),
+                        storage_size=m.get("StorageSize"),
+                        last_modified=m.get("LastUpdatedTime"),
+                    )
+                )
+            return results
+        except (ValueError, TypeError) as exc:
+            raise ModelScopeError(f"Failed to parse search results: {exc}")
 
     def download_file(
         self,
